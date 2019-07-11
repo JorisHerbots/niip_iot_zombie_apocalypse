@@ -21,6 +21,8 @@ from loramesh import LORAMESHMODI
 from volatileconfiguration import VolatileConfiguration as Config
 import uos
 from configurationWebserver import InputManager
+from system import System
+from exceptions import Exceptions
 
 # Setup global logger
 logging.basicConfig(level=logging.DEBUG)
@@ -44,14 +46,12 @@ try:
 except:
     logging.getLogger("boot").warning("No previous 'global' configuration save was found. Booting with default values.")
 
-# Check if we need to drop the trust key
-is_trust_key_still_safe = True
-
 # Device Configuration
-Config.set("device_trust_key", None, True, not is_trust_key_still_safe) # Trust key for signing
+Config.set("device_trust_key", None, True, False) # Trust key for signing - Will be set by a tamper detection in system
 Config.set("device_is_sensor", False, True, True) # TODO MANNU CODE
-Config.set("device_is_router", False, True, False) # Is this device a router
-Config.set("device_is_gateway", False, True, True) # Is this device a gateway
+Config.set("device_is_router", True, True, True) # Is this device a router
+Config.set("device_is_gateway", False, True, False) # Is this device a gateway
+Config.set("device_position", None, True, False) # Device location
 
 # WiFi Configuration
 Config.set("wifi_mode", WIFIMODI.OFF, True, False) # Wifi Mode
@@ -69,7 +69,7 @@ Config.set("ap_static_dns", "0.0.0.0", True, False) # Access point static IP - D
 # LoRa Configuration
 Config.set("lora_mode", LORAMESHMODI.OFF, True, False) # Lora mesh Mode
 Config.set("lora_seq_num", int.from_bytes(uos.urandom(1), "big"), True, False) # Lora zombiegram packet sequence numbers
-Config.set("lora_tamped_flag", False, True, False) # Lora zombiegram tampered flag
+Config.set("lora_tampered_flag", False, True, False) # Lora zombiegram tampered flag
 Config.set("lora_maintenance_flag", False, True, False) # Lora zombiegram maintance flag
 
 # LoRa gateway configuration
@@ -78,9 +78,11 @@ Config.set("gateway_webhook_2", "", True, False) # Gateway hook 2
 Config.set("gateway_webhook_3", "", True, False) # Gateway hook 3
 
 # User configuration options
-InputManager.add_input("device_trust_key", str, "", "Device Options", "Device", True)
+InputManager.add_input("device_trust_key", str, "", "Device Options", "Device trust key", True)
+InputManager.add_options("lora_tampered_flag", {"On":True, "Off":False}, False, "Device Options", "Device tampered flag (included in all Zombiegrams)")
+InputManager.add_options("lora_maintenance_flag", {"Required":True, "Not Required":False}, False, "Device Options", "Does this device need maintenance?")
 InputManager.add_options("device_is_router", {"Yes":True, "No":False}, False, "Device Options", "Is this device supposed to act as a router?")
-InputManager.add_options("device_is_gateway", {"Yes":True, "No":False}, False, "Device Options", "Is this device supposed to act as a gateway (this automatically means also being a router)?")
+InputManager.add_options("device_is_sensor", {"Yes":True, "No":False}, False, "Device Options", "Is this device a sensor?")
 InputManager.add_input("gateway_webhook_1", str, "", "Gateway", "Webhook URL (http including) the device should forward messages to. Leave empty for none.")
 InputManager.add_input("gateway_webhook_2", str, "", "Gateway", "Webhook URL (http including) the device should forward messages to. Leave empty for none.")
 InputManager.add_input("gateway_webhook_3", str, "", "Gateway", "Webhook URL (http including) the device should forward messages to. Leave empty for none.")
@@ -93,8 +95,23 @@ InputManager.add_input("ap_static_ip", str, "", "Wifi", "Access point static IPv
 InputManager.add_input("ap_static_mask", str, "", "Wifi", "Access point mask (in IPv4 format)")
 InputManager.add_input("ap_static_gateway", str, "", "Wifi", "Access point gateway IP")
 
-InputManager.set_category_priority("Device Options", 10)
-InputManager.set_category_priority("Gateway", 60)
+InputManager.set_category_priority("Device Options", 50)
+InputManager.set_category_priority("Gateway", 55)
+InputManager.set_category_priority("Wifi", 60)
+
+def p(): pass
+
+try:
+    # system = System()
+    # system.configButton.longActiveTime = 3
+    # system.configButton.longActiveCallback = p
+    # InputManager.set_hardware_controller(system)
+    # system.notifyNewConfiguration() # notify that a new configuration has been loaded (this call starts the connected sensor)
+    # logging.getLogger("boot").debug("System properties at boot | Is sleep wake [{}] | Battery level [{}] | Connected Sensor ID [{}] | Tampered status [{}] | GPS Coordinates [{}]".format(system.isSleepWake, system.batteryLevel, system.sensorID, system.tempered, system.coordinates))
+    # logging.getLogger("boot").info("System hardware configuration set")
+    pass
+except Exception as e:
+    logging.getLogger("boot").error("Setting up hardware failed! | Reason [{}]".format(str(e)))
 
 lora = LoRa(mode=LoRa.LORA, region=LoRa.EU868, bandwidth=LoRa.BW_125KHZ, sf=7)
 WifiManager.apply_settings()

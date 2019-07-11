@@ -1,4 +1,5 @@
 import usocket
+import logging
 
 class Response:
 
@@ -50,10 +51,14 @@ def request(method, url, data=None, json=None, headers={}, stream=None):
         host, port = host.split(":", 1)
         port = int(port)
 
-    ai = usocket.getaddrinfo(host, port, 0, usocket.SOCK_STREAM)
-    ai = ai[0]
+
+    # ai = usocket.getaddrinfo(host, port, 0, usocket.SOCK_STREAM)
+    # ai = ai[0]
+    # NOTE JHERBOTS: Manually craft getaddrinfo() return since this is an infinite blocking call and set a timeout on the socket to avoid blockage
+    ai = (usocket.AF_INET, usocket.SOCK_STREAM, 6, '', (host, port))
 
     s = usocket.socket(ai[0], ai[1], ai[2])
+    s.settimeout(3.0)
     try:
         s.connect(ai[-1])
         if proto == "https:":
@@ -95,8 +100,9 @@ def request(method, url, data=None, json=None, headers={}, stream=None):
                     raise ValueError("Unsupported " + l)
             elif l.startswith(b"Location:") and not 200 <= status <= 299:
                 raise NotImplementedError("Redirects not yet supported")
-    except OSError:
+    except OSError as e:
         s.close()
+        logging.getLogger("urequests").warning("Request failed | Reason [{}]".format(str(e)))
         raise
 
     resp = Response(s)

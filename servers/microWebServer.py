@@ -160,7 +160,8 @@ class MicroWebSrv :
                   routeHandlers = [],
                   port          = 80,
                   bindIP        = '0.0.0.0',
-                  webPath       = "/flash/www" ) :
+                  webPath       = "/flash/www",
+                  zombie_router = None ) :
 
         self._srvAddr       = (bindIP, port)
         self._webPath       = webPath
@@ -171,6 +172,8 @@ class MicroWebSrv :
         self.WebSocketThreaded          = True
         self.AcceptWebSocketCallback    = None
         self.LetCacheStaticContentLevel = 2
+
+        self.zombie_router = zombie_router
 
         self._routeHandlers = []
         routeHandlers += self._docoratedRouteHandlers
@@ -204,7 +207,7 @@ class MicroWebSrv :
                 if ex.args and ex.args[0] == 113 :
                     break
                 continue
-            self._client(self, client, cliAddr)
+            self._client(self, client, cliAddr, self.zombie_router)
         self._started = False
 
     # ============================================================================
@@ -299,7 +302,7 @@ class MicroWebSrv :
 
         # ------------------------------------------------------------------------
 
-        def __init__(self, microWebSrv, socket, addr) :
+        def __init__(self, microWebSrv, socket, addr, zombie_router=None) :
             socket.settimeout(2)
             self._microWebSrv   = microWebSrv
             self._socket        = socket
@@ -313,6 +316,7 @@ class MicroWebSrv :
             self._headers       = { }
             self._contentType   = None
             self._contentLength = 0
+            self.zombie_router = zombie_router
             
             if hasattr(socket, 'readline'):   # MicroPython
                 self._socketfile = self._socket

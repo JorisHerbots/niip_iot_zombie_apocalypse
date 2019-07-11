@@ -7,7 +7,7 @@ Developer note: Only works on 32 bit integer processors (some adjustments needed
 __usms_chars = [None]
 __usms_chars += [chr(i) for i in range(ord("a"), ord("z") + 1)]
 __usms_chars += [chr(i) for i in range(ord("0"), ord("9") + 1)]
-__usms_chars += list(",?;.:/\()[]!&|@#\'\"%$*-_+=<>")
+__usms_chars += list(",?;.:/\()[]!&|@#\'\"%*-_+=<> ")
 if len(__usms_chars) > 2**6:
     raise RuntimeError("USMS system dictionary contains more characters than its 6bit encoding system can support!")
 

@@ -133,8 +133,8 @@ class Zombiegram:
         self.source_id = source_id
         self.seq_num = seq_num
         self.priority = priority_flag
-        self.tampered = tampered_flag
-        self.maintenance = maintenance_flag
+        self.tampered_flag = tampered_flag
+        self.maintenance_flag = maintenance_flag
         self.__is_immutable = self.__bytestring_representation  # Sets mutable/immutable status at initialisation (should only happen when an existing payload gets loaded)
 
         self.payloads = []
@@ -719,7 +719,7 @@ class DiagnosticPayload(Payload):
 
     def __str__(self):
         output = "Diagnostic payload {"
-        output += "GPS [{},{}]".format(self.gps_longitude, self.gps_latitude)
+        output += "GPS [{}° latitude,{}° longtitude]".format(self.gps_latitude, self.gps_longitude)
         output += " | neighbor_one [{}]".format(self.best_neighbor_one)
         output += " | neighbor_two [{}]".format(self.best_neighbor_two)
         output += " | neighbor_three [{}]".format(self.best_neighbor_three)
@@ -744,14 +744,13 @@ class DiagnosticPayload(Payload):
             roles |= (self.is_gateway << gateway_shift)
             return roles
 
-        package = struct.pack("!ff", self.gps_longitude, self.gps_latitude)
+        package = struct.pack("!ff", self.gps_latitude, self.gps_longitude)
         package += self.best_neighbor_one.to_bytes(4, "big") if self.best_neighbor_one else self.__default_neighbor_id
         package += self.best_neighbor_two.to_bytes(4, "big") if self.best_neighbor_two else self.__default_neighbor_id
         package += self.best_neighbor_three.to_bytes(4,
                                                      "big") if self.best_neighbor_three else self.__default_neighbor_id
         package += self.battery_status.to_bytes(1, "big")
         package += self.sensor_id.to_bytes(1, "big")
-        print(device_network_encoder())
         package += device_network_encoder().to_bytes(1, "big")
         return package
 
@@ -764,7 +763,7 @@ class DiagnosticPayload(Payload):
         if self.best_neighbor_three:
             neighbors.append(self.best_neighbor_three)
         return {
-            "gps_coordinates": (self.gps_longitude, self.gps_latitude),
+            "gps_coordinates": (self.gps_latitude, self.gps_longitude),
             "best_neighbors": neighbors,
             "battery_status": self.battery_status,
             "network_role": self.network_role,
@@ -872,7 +871,7 @@ if __name__ == '__main__':
     #
     # print("\n")
     # print(_no_piggyback_opcode_list)
-    test = Zombiegram(source_id=b"\x00\x00\x00\x03", seq_num=2, priority_flag=3, tampered_flag=False,
+    test = Zombiegram(source_id=b"\x00\x00\x00\x03", seq_num=2, priority_flag=3, tampered_flag=True,
                       maintenance_flag=False)
     # print(test)
     # print(Zombiegram.from_payload(test.get_bytestring_representation() + b"\x00"))

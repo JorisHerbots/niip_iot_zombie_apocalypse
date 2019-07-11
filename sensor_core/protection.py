@@ -9,6 +9,8 @@ from communication import Pins, I2CBus
 from trigger import TriggerPin
 from exceptions import Exceptions
 
+from volatileconfiguration import VolatileConfiguration as Config
+from configurationWebserver import InputManager
 
 class Protection:
     """Protects the device from theft. Uses the accelerometer to detect movement, GPS is used to measure moved distance.
@@ -16,7 +18,7 @@ class Protection:
     location will be overwritten"""
 
     R = 6373.0 # radius earth in km
-    GPS_FILE_PATH = '/flash/store/coordinates.json'
+    GPS_FILE_PATH = '/flash/datastore/coordinates.json'
 
 
     @property
@@ -71,7 +73,22 @@ class Protection:
         self.__temperedChangeCallback = None
         self.__gpsChangeCallback = None
 
-        # TODO: store parameters in config
+        # Set Config & Inputmanager settings
+        Config.set("accelerometer_gforce", 500, True, False)
+        Config.set("accelerometer_duration", 200, True, False)
+        Config.set("accelerometer_longduration", 3, True, False)
+        Config.set("gps_max_distance", 0.01, True, False)
+        Config.set("gps_timeout", 60, True, False)
+        Config.set("gps_interval", 100, True, False)
+
+        InputManager.add_input("accelerometer_gforce", int, 500, "Accelerometer Config", "mG force the accelerometer must have to trigger the interrupt")
+        InputManager.add_input("accelerometer_duration", int, 200, "Accelerometer Config", "duration in milliseconds the accelerometer must move to trigger the interrupt")
+        InputManager.add_input("accelerometer_longduration", int, 3, "Accelerometer Config", "seconds indicating how long the accelerometer must be moving to indicate tempering")
+        InputManager.add_input("gps_max_distance", float, 0.01, "GPS Config", "the distance in km to trigger the callback")
+        InputManager.add_input("gps_timeout", int, 60, "GPS Config", "timeout in seconds before the gps times out")
+        InputManager.add_input("gps_interval", int, 100, "GPS Config", "milliseconds between two gps requests")
+        InputManager.set_category_priority("GPS Config", 116)
+        InputManager.set_category_priority("Accelerometer Config", 115)
 
         try:
             if shield.supports('protectionACC'):
@@ -90,11 +107,13 @@ class Protection:
         self.__tempered = False
         self.__requestGPSCoordinates(callback=self.__storeCoordinates)
 
-
-        # TODO read config
-
-
-
+        # Get values from config
+        self.__accGForce = Config.get("accelerometer_gforce", 500)
+        self.__accDuration = Config.get("accelerometer_duration", 200)
+        self.__accLongDuration = Config.get("accelerometer_longduration", 3)
+        self.__gpsMaxDistance = Config.get("gps_max_distance", 0.01)
+        self.__gpsTimeoutTime = Config.get("gps_timeout", 60)
+        self.__gpsInterval = Config.get("gps_interval", 100)
 
     """#######################################################################"""
 
@@ -183,8 +202,8 @@ class Protection:
     # call all current active gps callbacks
     def __callGPSCallbacks(self, coordinates):
         self.__coordinates = coordinates
-        if self.gpsChangeCallback:
-            self.gpsChangeCallback(coordinates)
+        if self.__gpsChangeCallback:
+            self.__gpsChangeCallback(coordinates)
 
         with self.__threadCallbacksLock:
             for callback in self.__threadCallbacks:

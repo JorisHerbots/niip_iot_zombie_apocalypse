@@ -67,9 +67,9 @@ class Connector:
     def __init__(self, i2cBus):
         try:
             self.__io = MCP23017(i2cBus.i2c(I2CBus.BUS0))
-            self.__io.iodira = 0b11111111
-            self.__io.gppua = 0b11111111
-            self.__id = (~self.__io.gpioa) & 0b11111111
+            self.__io.iodirb = 0b11111111
+            self.__io.gppub = 0b11111111
+            self.__id = (~self.__io.gpiob) & 0b11111111
         except Exception as e:
             Exceptions.error(Exception('Connector not found: ' + str(e)))
             self.__id = 0

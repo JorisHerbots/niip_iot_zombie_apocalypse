@@ -6,6 +6,9 @@ import pycom
 from communication import Pins
 from exceptions import Exceptions
 
+from volatileconfiguration import VolatileConfiguration as Config
+from configurationWebserver import InputManager
+
 configs = {
   0b00000000: {
     'moduleName': 'undefined',
@@ -13,10 +16,15 @@ configs = {
     'communication': Pins.DIGITAL,
     'config': {
         'id': 0b00000000,
-        'name': 'None',
+        'name': 'No Sensor',
         'powerActive': 100, # mA
         'powerInactive': 15, # mA
         'batteryCapacity': 5000, # mA
+    },
+    'to_configure': {
+        "powerActive": int,
+        "powerInactive": int,
+        "batteryCapacity": int
     }
   },
 
@@ -36,6 +44,17 @@ configs = {
         'detectWindow': 10, # sec
         'maxDetectionRate': 4,
         'sendRate': 10 # sec
+    },
+    'to_configure': {
+        "powerActive": int,
+        "powerInactive": int,
+        "batteryCapacity": int,
+        "rate": int,
+        "threshold": int,
+        "address": int,
+        "detectWindow": int,
+        "maxDetectionRate": int,
+        "sendRate": int
     }
   },
 }
@@ -76,14 +95,20 @@ class Configuration:
         self.__detectionCallback = detectionCallback
         self.__canSleepCallback = canSleepCallback
 
-        # TODO: load config into manager
-
-
+        # Load into InputManager
+        prefix = "sensor_" + self.__config["moduleName"] + "_"
+        for option in self.__config["to_configure"]:
+            config_key = (prefix + option).lower()
+            Config.set(config_key, self.__config["config"][option], True, False)
+            InputManager.add_input(config_key, self.__config["to_configure"][option], self.__config["config"][option], self.__config["config"]["name"], "")
+        InputManager.set_category_priority(self.__config["config"]["name"], 120)
 
     def notifyNewConfiguration(self):
-
-        # TODO: read new config
-
+         # Load into sensor config
+        prefix = "sensor_" + self.__config["moduleName"] + "_"
+        for option in self.__config["to_configure"]:
+            config_key = (prefix + option).lower()
+            self.__config["config"][option] = Config.get(config_key, self.__config["config"][option])
         try:
             self.__module = self.__createInstance(self.__config['moduleName'], self.__config['className'])
         except Exception as e:

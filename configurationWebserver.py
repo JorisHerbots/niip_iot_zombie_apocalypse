@@ -1,6 +1,8 @@
 from microWebServer import MicroWebSrv
 from volatileconfiguration import VolatileConfiguration as Config
-from wifi import WIFIMODI
+from wifi import WIFIMODI, WifiManager
+import logging
+from zombiegram import UsmsPayload, UsmsSizeTooLarge, NetworkChange, DetectionPayload, DiagnosticPayload
 
 class InputManager:
     class InputOption:
@@ -24,11 +26,12 @@ class InputManager:
         def set_option(self, raw_input):
             if not isinstance(raw_input, str):
                 raise TypeError("Input is required to be a string. (From POST data)")
+            raw_input = raw_input.replace("+", " ") # MicroWebServ quirk...
+
             if self.hide_configured_value and raw_input == InputManager.InputOption._hidden_text:
                 return
 
             if self.options:
-                raw_input = raw_input.replace("+", " ") # MicroWebServ quirk...
                 if raw_input in self.options:
                     Config.set(self.config_key, self.options[raw_input], True, True)
                 else:
@@ -53,12 +56,15 @@ class InputManager:
                 html += '</select>'
                 return html
             else:
-                value = InputManager.InputOption._hidden_text if self.hide_configured_value else Config.get(self.config_key, "")
+                value = InputManager.InputOption._hidden_text if self.hide_configured_value else Config.get(self.config_key, self.default)
                 return '<h5>{} ({})</h5><input id="{}" name="{}" value="{}" placeholder="{}" /></p>'.format(self.config_key, self.help_line, self.config_key, self.config_key, value, self.default)
 
 
     inputs = {}
     categories = {} # name => priority
+
+    _hardware = None
+    _webserver = None
 
     @staticmethod
     def add_input(config_key, key_type, default, category, help="", hide_configured_value=False):
@@ -98,36 +104,128 @@ class InputManager:
         html += '<input type="submit" value="Update Device" /></form>'
         return html
 
+    @staticmethod
+    def set_hardware_controller(hw):
+        InputManager._hardware = hw
+
+    @staticmethod
+    def set_webserver_controller(ws):
+        InputManager._webserver = ws
+
+    @staticmethod
+    def save_and_notify_config_changes():
+        Config.save_configuration_to_datastore("global")
+        if InputManager._hardware:
+            InputManager._hardware.notifyNewConfiguration()
+
+        WifiManager.apply_settings()
+
+        if Config.get("wifi_mode", WIFIMODI.OFF) == WIFIMODI.OFF and InputManager._webserver:
+            InputManager._webserver.Stop()
+        else:
+            InputManager._webserver.Start(threaded=True)
+
+
 # InputManager.add_input("test1", str, "Hoi1", "global", "This is a default text")
 # InputManager.add_input("test2", str, "Hoi2", "global", "This is a default text")
 # InputManager.add_input("test3", int, "Hoi3", "other", "This is a default text")
 # InputManager.add_options("test4", {"off":WIFIMODI.OFF, "Station":WIFIMODI.STA, "Access Point":WIFIMODI.AP, "Station - Access Point":WIFIMODI.STA_AP}, WIFIMODI.AP, "other", "help line")
 
 @MicroWebSrv.route('/', 'GET')
-def getHandler(httpClient, httpResponse):
+def userConfigGetHandler(httpClient, httpResponse):
     html = '<!DOCTYPE html><html><head><title>Device Config</title><style>h5{padding: 0px; margin: 0px;}</style><meta name="viewport" content="width=device-width"></head><body>'
     html += InputManager.generate_html_input_tags()
     html += '</body></html>'
     httpResponse.WriteResponseOk(headers=None, contentType="text/html", contentCharset="UTF-8", content=html)
 
 @MicroWebSrv.route('/', 'POST')
-def submitHandler(httpClient, httpResponse):
-    # Parse input
-    errors = ""
-    for key, val in httpClient.ReadRequestPostedFormData().items():
-        try:
-            InputManager.parse_input(key, val)
-        except Exception as e:
-            errors += "<h5>{}</h5><p>Reason: {}</p>".format(key, str(e))
-    if errors:
-        errors = "<h1>Errors during saving</h1>" + errors
-    
-    # Save whatever got set
-    Config.save_configuration_to_datastore("global")
+def userConfigSubmitHandler(httpClient, httpResponse):
+    try:
+        # Parse input
+        errors = ""
+        for key, val in httpClient.ReadRequestPostedFormData().items():
+            try:
+                InputManager.parse_input(key, val)
+            except Exception as e:
+                errors += "<h5>{}</h5><p>Reason: {}</p>".format(key, str(e))
+        if errors:
+            errors = "<h1>Errors during saving</h1>" + errors
 
-    # Default page (with not updated values)
-    html = '<!DOCTYPE html><html><head><title>Device Config</title><style>h5{padding: 0px; margin: 0px;}</style><meta name="viewport" content="width=device-width"></head><body>'
-    html += errors
-    html += InputManager.generate_html_input_tags()
-    html += '</body></html>'
-    httpResponse.WriteResponseOk(headers=None, contentType="text/html", contentCharset="UTF-8", content=html)
+        # Default page (with not updated values)
+        html = '<!DOCTYPE html><html><head><title>Device Config</title><style>h5{padding: 0px; margin: 0px;}</style><meta name="viewport" content="width=device-width"></head><body>'
+        html += errors
+        html += InputManager.generate_html_input_tags()
+        html += '</body></html>'
+        httpResponse.WriteResponseOk(headers=None, contentType="text/html", contentCharset="UTF-8", content=html)
+
+        # Save whatever got set and notify hardware about possible changes
+        InputManager.save_and_notify_config_changes()
+        logging.getLogger("configuration-webserver").info("User configuration change was submitted and saved.")
+    except Exception as e:
+        print(str(e))
+
+@MicroWebSrv.route('/usms', 'POST')
+def usmsApi(httpClient, httpResponse):
+    data = httpClient.ReadRequestContentAsJSON()
+    # TODO needs better error wrapping
+    try:
+        print(data["text"])
+        usms_payload = UsmsPayload(data["text"])
+        print(usms_payload)
+        httpClient.zombie_router.queue_zombiegram(2, usms_payload) 
+        httpResponse.WriteResponseOk(headers=None, contentType="application/json", contentCharset="UTF-8", content="OK")
+        logging.getLogger("configuration-webserver").info("Gateway USMS received.")
+    except UsmsSizeTooLarge as e:
+        httpResponse.WriteResponseOk(headers=None, contentType="application/json", contentCharset="UTF-8", content='{"error":"' + str(e) + '"')
+    except Exception as e:
+        httpResponse.WriteResponseOk(headers=None, contentType="application/json", contentCharset="UTF-8", content='{"error":"Unknown"}')
+        logging.getLogger("configuration-webserver").warning("Could not send USMS | Reason [{}]".format(str(e)))
+
+@MicroWebSrv.route('/key_compromised', 'POST')
+def keyCompromisedApi(httpClient, httpResponse):
+    try:
+        if Config.get("device_trust_key"):
+            nc = NetworkChange(trust_key=Config.get("device_trust_key"))
+            httpClient.zombie_router.queue_zombiegram(2, nc)
+            Config.set("device_trust_key", None)
+            Config.save_configuration_to_datastore("global")
+            httpResponse.WriteResponseOk(headers=None, contentType="text/html", contentCharset="UTF-8", content="{}")
+            logging.getLogger("configuration-webserver").warning("Key compromised event got triggered! Dropping our own trust key and propagating event.")
+        else:
+            httpResponse.WriteResponseOk(headers=None, contentType="text/html", contentCharset="UTF-8", content='{"error":"Could not drop key, device probably does not have a key set."}')
+    except Exception as e:
+        httpResponse.WriteResponseOk(headers=None, contentType="text/html", contentCharset="UTF-8", content='{"error":"Unknown error"}')
+        logging.getLogger("configuration-webserver").warning("Key compromised event could not be processed. | Reason [{}]".format(str(e)))
+    
+@MicroWebSrv.route('/fix', 'POST')
+def fix(httpClient, httpResponse):
+    try:
+        data = httpClient.ReadRequestContentAsJSON()
+        diag_needed = False
+        if "confidence" in data:
+            payload  = DetectionPayload(int(data["confidence"]), int(data["hitcounter"]))
+            httpClient.zombie_router.queue_zombiegram(3, payload)
+
+        if "tampered" in data:
+            Config.set("lora_tampered_flag", True)
+            Config.save_configuration_to_datastore("global")
+            diag_needed = True
+
+        if "gps_latitude" in data:
+            Config.set("device_position", (float(data["gps_latitude"]), float(data["gps_longtitude"])))
+            diag_needed = True
+
+        if "maintenance" in data:
+            Config.set("lora_maintenance_flag", True)
+            Config.save_configuration_to_datastore("global")
+            diag_needed = True
+
+        if diag_needed:
+            coordinates = Config.get("device_position", (0.0,0.0)) if Config.get("device_position") else (0.0, 0.0)
+            coordinates = (float(coordinates[0]), float(coordinates[1]))
+            neighbors = httpClient.zombie_router.get_neighbors()
+            diag = DiagnosticPayload(coordinates, neighbors, 100, 1, is_sensor=Config.get("device_is_sensor", False), is_router=Config.get("device_is_router", False), is_gateway=Config.get("device_is_gateway", False), sensor_id=0)
+            #httpClient.zombie_router.queue_zombiegram(1, diag)
+    except Exception as e:
+        logging.getLogger("configuration-webserver").debug("Fix failed | Reason [{}]".format(str(e)))
+    httpResponse.WriteResponseOk(headers=None, contentType="text/html", contentCharset="UTF-8", content='')

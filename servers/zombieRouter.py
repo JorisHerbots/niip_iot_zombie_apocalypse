@@ -9,6 +9,7 @@ import machine
 from dropqueue import DropQueue
 from volatileconfiguration import VolatileConfiguration as Config
 import urequests
+import gc
 
 class ZombieRouterException(Exception):
     pass
@@ -22,7 +23,7 @@ class ZombieRouter:
 
     # Ports are technically not used, LoRa listens to all incoming traffic on the interface
     # https://forum.pycom.io/topic/4077/a-few-questions-about-the-lora-mesh/2
-    __device_source_id = machine.unique_id()[-4:]
+    __device_source_id = bytes_to_int(machine.unique_id()) & 0xFFFFFFFF
     __port = 1337
     __max_transmissions_per_burst = 10
 
@@ -37,6 +38,8 @@ class ZombieRouter:
         self._socket = None
         self._neighbor_sequences = {}
         self._package_acks = {}
+        self._zombiegram_queue = []
+        self._zombiegram_queue_lock = allocate_lock()
 
     def start(self):
         """Starts the ZombieRouter LoRa mechanism on a separate thread
@@ -65,6 +68,20 @@ class ZombieRouter:
         connected = self._lora_mesh.is_connected() if started else False
         has_neighbors = True if connected and self._lora_mesh.neighbors() else False
         return has_neighbors
+
+    def retransmission_count(self):
+        count = 0
+        for source, rt_cache in self._package_acks.items():
+            count += rt_cache.retransmission_count()
+        return count
+    
+    def get_neighbors(self):
+        neighbor_ids = []
+        if self._started and self._lora_mesh.neighbors():
+            count = 0
+            for neighbor in self._lora_mesh.neighbors():
+                neighbor_ids.append(neighbor[0] & 0xFFFFFFFF)
+        return neighbor_ids
 
     def _handle_retransmissions(self):
         # Retrieve all unfinished packages
@@ -104,24 +121,35 @@ class ZombieRouter:
                 logging.getLogger("zombieserver").info("LoRa mesh interface IP changed from [{}] to [{}]".format(ip, new_ip))
                 ip = new_ip
 
+            # Handle queued items
+            if self.is_network_ready() and self._zombiegram_queue:
+                with self._zombiegram_queue_lock:
+                    for queue_item in self._zombiegram_queue:
+                        self.send_zombiegram(queue_item[0], *(queue_item[1]))
+                    logging.getLogger("zombierouter").info("A total of [{}] queued zombiegrams were sent out.".format(len(self._zombiegram_queue)))
+                    del self._zombiegram_queue[:]
+
             # Retransmission logic
             self._handle_retransmissions()
 
             time.sleep(10) # Longer sleep
+
         self._lora_mesh.mesh.deinit()
         self._socket.close()
         self._started = False
+        with self._zombiegram_queue_lock:
+            del self._zombiegram_queue[:]
         logging.getLogger("zombierouter").info("Zombierouter thread stopped. Router is now inactive.")        
 
     def _handle_gateway_propagation(self, zombiegram):
         gateway_hooks = []
         if Config.get("gateway_webhook_1", None): gateway_hooks.append(Config.get("gateway_webhook_1"))
-        if Config.get("gateway_webhook_2", None): gateway_hooks.append(Config.get("gateway_webhook_3"))
+        if Config.get("gateway_webhook_2", None): gateway_hooks.append(Config.get("gateway_webhook_2"))
         if Config.get("gateway_webhook_3", None): gateway_hooks.append(Config.get("gateway_webhook_3"))
 
         for hook in gateway_hooks:
             try:
-                urequests.post(hook, json=zombiegram.serialize_to_dict(Config.get("device_trust_key", )))
+                urequests.post(hook, json=zombiegram.serialize_to_dict(Config.get("device_trust_key", None)))
                 logging.getLogger("zombierouter").debug("Propagated incoming zombiegram to external hook [{}]".format(hook))
             except Exception as e:
                 logging.getLogger("zombierouter").debug("External hook [{}] could not be contacted | Reason [{}]".format(hook, str(e)))
@@ -166,6 +194,8 @@ class ZombieRouter:
                             except: pass # We can ignore this; a cache miss can happen when enough acks are already received and the given seq_num is removed by _handle_retransmissions()
                             logging.getLogger("zombierouter").debug("Received acknowledgement from [{}] for a sent zombiegram from source_id [{}] with seq_num [{}]".format(zg.source_id, payload.source_id, payload.seq_num))
                         if isinstance(payload, NetworkChange):
+                            Config.set("device_trust_key", None, True, True)
+                            Config.save_configuration_to_datastore("global")
                             zombiegram_needs_gateway_forwarding = False
 
                     # We only forward non-ack zombiegrams
@@ -173,7 +203,7 @@ class ZombieRouter:
                         self.forward_zombiegram(zg)
 
                     # Gateway forwarding
-                    if zombiegram_needs_gateway_forwarding:
+                    if Config.get("device_is_gateway", False) and zombiegram_needs_gateway_forwarding:
                         self._handle_gateway_propagation(zg)
 
                     # Add to seen queue
@@ -210,8 +240,12 @@ class ZombieRouter:
         return zg
         
     def _send_zombiegram_to(self, zombiegram, address, add_to_retransmission_cache=False):
-        self._socket.sendto(zombiegram.get_bytestring_representation(), (address, ZombieRouter.__port)) # MULTICAST_LINK_ALL = All neighbors
-        
+        try:
+            self._socket.sendto(zombiegram.get_bytestring_representation(), (address, ZombieRouter.__port)) # MULTICAST_LINK_ALL = All neighbors
+        except Exception as e: # Socket only throws OSError (µpython implementation specifics), we want to capture everything here
+            logging.getLogger("zombierouter").error("Sending data over LoRa network failed even though setup completed! Data will be lost. | Addressed to [{}] | Reason [{}]".format(address, str(e)))
+            return
+
         # Retransmission queue logic
         if add_to_retransmission_cache:
             try:
@@ -220,7 +254,7 @@ class ZombieRouter:
                 own_message = bytes_to_int(ZombieRouter.__device_source_id) == zombiegram.source_id
                 self._package_acks[zombiegram.source_id].add_package(zombiegram, own_message)
                 logging.getLogger("zombierouter").debug("Zombiegram from [{}] with seq_num [{}] added to the retransmission cache.".format(zombiegram.source_id, zombiegram.seq_num))
-                if own_message:
+                if own_message and Config.get("device_is_gateway", False):
                     self._handle_gateway_propagation(zombiegram)
             except ZombieRouterInvalidAckCache as e:
                 logging.getLogger("zombierouter").warning("Adding zombiegram from [{}] with seq_num [{}] to retransmission cache failed! | Reason [{}]".format(zombiegram.source_id, zombiegram.seq_num, str(e)))
@@ -252,6 +286,12 @@ class ZombieRouter:
     def send_zombiegram(self, priority, *payloads):
         self._send_zombiegram_to(self._create_zombiegram_with_payloads(priority, *payloads), self._lora_mesh.MULTICAST_LINK_ALL, True)
 
+    def queue_zombiegram(self, priority, *payloads):
+        # zg = self._create_zombiegram_with_payloads(priority, *payloads)
+        with self._zombiegram_queue_lock:        
+            self._zombiegram_queue.append((priority, payloads))
+        logging.getLogger("zombierouter").info("Payloads were queued with a priority of [{}]".format(priority))
+
     class RetransmissionCache:
         """Keep a cache of sent or forwarded zombiegrams
         This class manages their respective unique acknowledgement counts
@@ -266,6 +306,9 @@ class ZombieRouter:
         def __init__(self):
             # seq_num => [received ack count, [list of acked destionation ids], Zombiegram, own message (bool)]
             self._cache = {}
+
+        def retransmission_count(self):
+            return len(self._cache)
 
         def add_package(self, send_zombiegram, own_message):
             """Add a zombiegram to the retransmission cache

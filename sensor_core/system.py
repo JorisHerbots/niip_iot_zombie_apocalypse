@@ -7,6 +7,8 @@ from shields import Shield
 from communication import I2CBus, Connector, Pins
 from configurations import Configuration
 from protection import Protection
+from volatileconfiguration import VolatileConfiguration as Config
+import device
 
 
 class System:
@@ -57,7 +59,7 @@ class System:
 
 
     # constructor
-    def __init__(self, configurationManager, sendMessageCallback, requestUserCallback):
+    def __init__(self):
         self.__sleep = Sleep()
         self.__canSleep = True
 
@@ -73,18 +75,28 @@ class System:
         self.__protection = Protection(sleep=self.__sleep, shield=self.__shield, i2cBus=self.__i2cBus)
 
         # set variables
-        self.__sendMessageCallback = sendMessageCallback
-        self.__requestUserCallback = requestUserCallback
         self.__canSleepChangeCallback = None
 
-        if Exceptions.hasErrors() and requestUserCallback:
-            requestUserCallback()
+        # self.__protection.gpsChangeCallback = lambda x: print("gps changed: " + str(x))
+        # self.__protection.temperedChangeCallback = lambda x, y: print("tempered changed: " + str(x) + ", distance: " + str(y))
+        self.__protection.gpsChangeCallback = self.gpsChangeCallback
+        self.__protection.temperedChangeCallback = self.tamperedChangeCallback
 
-        self.__protection.gpsChangeCallback = lambda x: print("gps changed: " + str(x))
-        self.__protection.temperedChangeCallback = lambda x, y: print("tempered changed: " + str(x) + ", distance: " + str(y))
+        # External callbacks
+        self.external_detection_callback = None
+
+    def set_zombie_detected_callback(self, zombie_detection_callback=None):
+        self.external_detection_callback = zombie_detection_callback
+
+    def gpsChangeCallback(self, position):
+        Config.set("device_position", position, True, True)
+
+    def tamperedChangeCallback(self, is_tampered, distance):
+        # if distance == None -> Accelerometer has triggered the protection
+        Config.set("lora_tampered_flag", is_tampered, True, True) # Lora zombiegram tampered flag
+        device.drop_trust_key()
 
     def notifyNewConfiguration(self):
-        print('New configuration found')
         self.__sleep.resetTimers()
         self.__config.notifyNewConfiguration()
         self.__protection.notifyNewConfiguration()
@@ -95,7 +107,9 @@ class System:
         self.__sleep.sleep(milliseconds)
 
     def __detectCallback(self, confidence):
-        print('zombie detected! confidence: ' + str(confidence))
+        if self.external_detection_callback:
+            confidence = int(confidence*100) # Translate between zombiegram and system definitions
+            self.external_detection_callback(confidence)
 
     def __canSleepCallback(self, value):
         if self.__canSleep != value:
